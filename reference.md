@@ -68,8 +68,8 @@ ORDER BY b.created_at DESC
 LIMIT 20;
 ```
 
-**先看 `run_lang` 和 `dataset_lang` 是否一致。** arena 目前只支持 en / zh / ja / es，
-其他语言的数据集会被存成 `en`，直连模型就会收到 `language=en`。
+**先看 `run_lang` 和 `dataset_lang` 是否一致。** 早期 arena 只支持 en / zh / ja / es，
+其他语言的数据集被存成了 `en`，直连模型就会收到 `language=en`（现已支持 pt-br / `auto`）。
 
 ### ② 看一个 run 的每条结果
 
