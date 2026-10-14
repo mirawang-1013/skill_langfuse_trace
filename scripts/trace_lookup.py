@@ -30,6 +30,8 @@ Langfuse 限流：GET /api/public/traces 每分钟 15 次，所以每次请求�
   python3 trace_lookup.py arena-db --dataset 葡萄牙语
   python3 trace_lookup.py arena-db --batch <batch_id> \
       --with-posthog --out Benchmark_Portuguese/arena_db_pt.csv
+  # 只有 ogg 文件名：跨所有 run 看这条音频在各候选下的返回
+  python3 trace_lookup.py arena-db --file <audio_id>.ogg --candidate gemini-3.5-transcribe
 
   # 1) 查原始线上请求（数据集里的 audio_id）
   python3 trace_lookup.py audio <audio_id>
@@ -241,7 +243,7 @@ def db():
 
 def cmd_arena_db(a):
     cur = db().cursor()
-    if not a.batch:
+    if not a.batch and not a.file:
         # 列 run：按数据集名 / 时间窗口筛
         sql = """SELECT b.id, b.created_at, d.name, d.primary_language, b.language, b.status, b.total_items,
                         jsonb_path_query_array(b.models, '$[*].candidate_key')
@@ -261,36 +263,46 @@ def cmd_arena_db(a):
         print("\n下一步：trace_lookup.py arena-db --batch <batch_id> --with-posthog --out xxx.csv")
         return
 
-    cur.execute("""SELECT b.language, d.name, d.primary_language, b.dictionary FROM arena_batches b
-                   LEFT JOIN arena_datasets d ON d.id = b.dataset_id WHERE b.id = %s""", (a.batch,))
-    meta = cur.fetchone()
-    if not meta:
-        sys.exit(f"找不到 batch {a.batch}")
-    print(f"数据集 {meta[1]}（{meta[2]}）· run 语言 = {meta[0]!r}"
-          + ("  ⚠️ 和数据集语言不一致" if (meta[0] or "").split("-")[0] != (meta[2] or "").split("-")[0] else "")
-          + f" · 词典 {len(meta[3] or [])} 个词")
+    if a.batch:
+        cur.execute("""SELECT b.language, d.name, d.primary_language, b.dictionary FROM arena_batches b
+                       LEFT JOIN arena_datasets d ON d.id = b.dataset_id WHERE b.id = %s""", (a.batch,))
+        meta = cur.fetchone()
+        if not meta:
+            sys.exit(f"找不到 batch {a.batch}")
+        print(f"数据集 {meta[1]}（{meta[2]}）· run 语言 = {meta[0]!r}"
+              + ("  ⚠️ 和数据集语言不一致" if (meta[0] or "").split("-")[0] != (meta[2] or "").split("-")[0] else "")
+              + f" · 词典 {len(meta[3] or [])} 个词")
+    # 链路：arena_audios.file_name（= 你手上的 ogg 名）→ arena_audios.id = arena_tasks.audio_id（arena 内部 id，
+    # 不是 PostHog audio_id）→ arena_tasks.id = arena_results.task_id。一行 task = 音频 × 候选 × run，模型在 task 上区分。
     # 输入：音频 object_key / audio_context / 请求语言 / prompt / params；输出：asr_text(模型原始) / text(后处理后) / token_usage
     sql = """SELECT a.file_name, t.candidate_key, t.provider, t.model_id, t.status, t.error_message,
                     r.language, r.wer, r.latency, r.text, r.ground_truth_text, t.extra,
                     a.object_key, a.duration_seconds, a.audio_context, t.params,
                     t.prompt_id, t.multimodal_prompt_id, t.postprocess_model_id, t.postprocess_prompt_id,
-                    r.asr_text, r.token_usage
+                    r.asr_text, r.token_usage, t.batch_id, t.created_at, d.name, b.language, r.reused_from_run_id
              FROM arena_tasks t
              JOIN arena_audios a ON a.id = t.audio_id
+             JOIN arena_batches b ON b.id = t.batch_id AND b.deleted_at IS NULL
+             LEFT JOIN arena_datasets d ON d.id = b.dataset_id
              LEFT JOIN arena_results r ON r.task_id = t.id AND r.deleted_at IS NULL
-             WHERE t.batch_id = %s AND t.deleted_at IS NULL"""
-    args = [a.batch]
+             WHERE t.deleted_at IS NULL"""
+    args = []
+    if a.batch:
+        sql += " AND t.batch_id = %s"; args.append(a.batch)
+    elif a.dataset:
+        sql += " AND d.name ILIKE %s"; args.append(f"%{a.dataset}%")
     if a.candidate:
         sql += " AND t.candidate_key ILIKE %s"; args.append(f"%{a.candidate}%")
     if a.file:
         sql += " AND a.file_name ILIKE %s"; args.append(f"%{a.file}%")
-    cur.execute(sql + " ORDER BY a.file_name, t.candidate_key", args)
+    cur.execute(sql + " ORDER BY a.file_name, t.created_at, t.candidate_key", args)
     rows = []
     js = lambda v: json.dumps(v, ensure_ascii=False) if v else ""
     for (f, ck, prov, mid, st, err, lang, wer, lat, text, gt, extra, key, dur, ctx, params,
-         pr, mpr, ppm, ppr, asr_text, usage) in cur.fetchall():
+         pr, mpr, ppm, ppr, asr_text, usage, bid, created, ds, blang, reused) in cur.fetchall():
         pm = (extra or {}).get("provider_meta") or {}
-        rows.append({"file": f, "candidate": ck, "provider": prov, "model": mid,
+        rows.append({"file": f, "batch_id": bid, "run_at": created, "dataset": ds, "run_language": blang,
+                     "candidate": ck, "provider": prov, "model": mid,
                      "server_model": pm.get("server_model"), "backend": pm.get("backend"),
                      "status": st, "error": err,
                      "sent_language": lang, "wer": wer, "latency": lat,
@@ -298,7 +310,7 @@ def cmd_arena_db(a):
                      "prompt_id": pr or mpr, "postprocess": "/".join(x for x in (ppm, ppr) if x), "params": js(params),
                      "object_key": key, "duration_s": dur, "audio_context": ctx,
                      "vc_audio_id": pm.get("audio_id"), "provider_session_id": pm.get("session_id"),
-                     "server_commit": pm.get("server_commit")})
+                     "server_commit": pm.get("server_commit"), "reused_from_run_id": reused})
     if a.with_posthog:
         # VoiceCursor 候选：provider_meta.audio_id == PostHog asr_metrics.audio_id
         ev = prod_events([r["vc_audio_id"] for r in rows if r["vc_audio_id"]], arena=True)
@@ -327,14 +339,15 @@ def main():
     for p in (p1, p2):
         p.add_argument("--out", help="CSV 输出路径；不填就打印")
         p.add_argument("--fetch-traces", metavar="JSON", help="顺带把 Langfuse 完整 trace 拉到这个文件")
-    p3 = sub.add_parser("arena-db", help="读 arena 的 Supabase 库：不带 --batch 列 run，带 --batch 导出每条结果")
+    p3 = sub.add_parser("arena-db", help="读 arena 的 Supabase 库：只给 --dataset/--since 列 run；"
+                        "给 --batch 导出该 run 每条结果；只给 --file 跨所有 run 查这条音频")
     p3.add_argument("--batch", help="arena_batches.id")
-    p3.add_argument("--dataset", help="列 run 时按数据集名模糊筛")
+    p3.add_argument("--dataset", help="按数据集名模糊筛（列 run，或 --file 跨 run 查时缩小范围）")
     p3.add_argument("--since", help="列 run 时的起始时间（UTC）")
     p3.add_argument("--until")
     p3.add_argument("--limit", type=int, default=20)
     p3.add_argument("--candidate", help="只看某个候选，如 whisper / VoiceCursor")
-    p3.add_argument("--file", help="只看某条音频，填文件名（= 原 audio_id）前缀")
+    p3.add_argument("--file", help="只看某条音频，填文件名（= 原 audio_id）或前缀；不带 --batch 时跨所有 run")
     p3.add_argument("--with-posthog", action="store_true", help="VoiceCursor 候选关联 PostHog + Langfuse 链接")
     p3.add_argument("--out", help="CSV 输出路径；不填就打印")
     a = ap.parse_args()

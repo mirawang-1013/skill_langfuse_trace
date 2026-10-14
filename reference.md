@@ -46,6 +46,10 @@ CSV 关键列：`sent_language`（实际传给 provider 的语言）、`wer`、`
 
 ### 表关系
 
+一行 `arena_tasks` = 一条音频 × 一个候选模型 × 一次 run，**模型在 task 上区分**（`candidate_key` / `provider` / `model_id`）。
+注意 `arena_tasks.audio_id` 是 arena 内部的 `arena_audios.id`，不是 PostHog 的 audio_id；
+你手上的 ogg 名对应的是 `arena_audios.file_name`（每次 run 都会导入一份新行）。
+
 ```
 arena_datasets (name, primary_language)
    └─ arena_batches  = 一次 run (language, models, dictionary, status)
