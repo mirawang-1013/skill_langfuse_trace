@@ -261,15 +261,20 @@ def cmd_arena_db(a):
         print("\n下一步：trace_lookup.py arena-db --batch <batch_id> --with-posthog --out xxx.csv")
         return
 
-    cur.execute("""SELECT b.language, d.name, d.primary_language FROM arena_batches b
+    cur.execute("""SELECT b.language, d.name, d.primary_language, b.dictionary FROM arena_batches b
                    LEFT JOIN arena_datasets d ON d.id = b.dataset_id WHERE b.id = %s""", (a.batch,))
     meta = cur.fetchone()
     if not meta:
         sys.exit(f"找不到 batch {a.batch}")
     print(f"数据集 {meta[1]}（{meta[2]}）· run 语言 = {meta[0]!r}"
-          + ("  ⚠️ 和数据集语言不一致" if (meta[0] or "").split("-")[0] != (meta[2] or "").split("-")[0] else ""))
+          + ("  ⚠️ 和数据集语言不一致" if (meta[0] or "").split("-")[0] != (meta[2] or "").split("-")[0] else "")
+          + f" · 词典 {len(meta[3] or [])} 个词")
+    # 输入：音频 object_key / audio_context / 请求语言 / prompt / params；输出：asr_text(模型原始) / text(后处理后) / token_usage
     sql = """SELECT a.file_name, t.candidate_key, t.provider, t.model_id, t.status, t.error_message,
-                    r.language, r.wer, r.latency, r.text, r.ground_truth_text, t.extra
+                    r.language, r.wer, r.latency, r.text, r.ground_truth_text, t.extra,
+                    a.object_key, a.duration_seconds, a.audio_context, t.params,
+                    t.prompt_id, t.multimodal_prompt_id, t.postprocess_model_id, t.postprocess_prompt_id,
+                    r.asr_text, r.token_usage
              FROM arena_tasks t
              JOIN arena_audios a ON a.id = t.audio_id
              LEFT JOIN arena_results r ON r.task_id = t.id AND r.deleted_at IS NULL
@@ -281,10 +286,17 @@ def cmd_arena_db(a):
         sql += " AND a.file_name ILIKE %s"; args.append(f"%{a.file}%")
     cur.execute(sql + " ORDER BY a.file_name, t.candidate_key", args)
     rows = []
-    for f, ck, prov, mid, st, err, lang, wer, lat, text, gt, extra in cur.fetchall():
+    js = lambda v: json.dumps(v, ensure_ascii=False) if v else ""
+    for (f, ck, prov, mid, st, err, lang, wer, lat, text, gt, extra, key, dur, ctx, params,
+         pr, mpr, ppm, ppr, asr_text, usage) in cur.fetchall():
         pm = (extra or {}).get("provider_meta") or {}
-        rows.append({"file": f, "candidate": ck, "provider": prov, "model": mid, "status": st, "error": err,
-                     "sent_language": lang, "wer": wer, "latency": lat, "text": text, "ground_truth": gt,
+        rows.append({"file": f, "candidate": ck, "provider": prov, "model": mid,
+                     "server_model": pm.get("server_model"), "backend": pm.get("backend"),
+                     "status": st, "error": err,
+                     "sent_language": lang, "wer": wer, "latency": lat,
+                     "asr_text": asr_text, "text": text, "ground_truth": gt, "token_usage": js(usage),
+                     "prompt_id": pr or mpr, "postprocess": "/".join(x for x in (ppm, ppr) if x), "params": js(params),
+                     "object_key": key, "duration_s": dur, "audio_context": ctx,
                      "vc_audio_id": pm.get("audio_id"), "provider_session_id": pm.get("session_id"),
                      "server_commit": pm.get("server_commit")})
     if a.with_posthog:

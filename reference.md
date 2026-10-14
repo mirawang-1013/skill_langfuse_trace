@@ -119,7 +119,8 @@ GROUP BY 1, 2;
 
 - **arena 发请求用的是评测账号**，原用户的词典不会生效；PostHog 里 `effective_vocabulary` 为空。
 - **arena 会重新上传音频**，`vc_audio_id` 是新的，和数据集里的 audio_id 不同；要查原始线上请求用 `python3 $S audio <原 audio_id>`。
-- **arena 后端 `auto` / 空语言会默认成 `en`**（`backend/service/asr_provider/language.go`）。
-- **whisper-1 的 `provider_session_id`** 在 PostHog / Langfuse 里查不到，库里就是全部记录。
+- **早期 arena 后端 `auto` / 空语言会默认成 `en`**（`backend/service/asr_provider/language.go`）；现在已支持 `auto` 和 pt-br，以 `sent_language` 为准。
+- **第三方候选（whisper-1、Gemini 等）的 `provider_session_id`** 在 PostHog / Langfuse 里查不到（经 `voicecursor-asr` 网关的也一样），库里就是全部记录：
+  模型看 `model_id` + `provider_meta.server_model`，输入看 `arena_audios.object_key` / `audio_context` + `arena_tasks.params` / `prompt_id`，输出看 `arena_results.asr_text` / `text` / `token_usage`。
 - **Langfuse `/api/public/traces` 接口**每分钟限 15 次，且官方公告 2026-11-16 下线，之后脚本要改用 `/api/public/v2/observations`。
 - **arena 导出的 xlsx** 用 openpyxl 只读模式打开只能读到第一列，要用普通模式。

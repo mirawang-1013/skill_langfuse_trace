@@ -40,14 +40,22 @@ argument-hint: "<audio_id...> | arena-db --dataset <名字> | arena-db --batch <
   是不是 arena 重放后的新 id（这种要用 `arena-db`）。
 - arena-db：先看脚本打印的 run 语言和数据集语言是否一致（不一致会标 ⚠️），
   再按候选汇总 `sent_language` / `wer` / 失败数。
+- 用户问某个候选"用了什么模型、输入输出是什么"时，按这几列回答：
+  - 模型：`model`，经 `voicecursor-asr` 网关的还要看 `server_model`（网关实际调用的模型）
+  - 输入：`object_key`（音频）、`duration_s`、`sent_language`、`audio_context`、`prompt_id`（空 = 无自定义 prompt）、
+    `postprocess`、`params`，以及脚本开头打印的 batch 词典数
+  - 输出：`asr_text`（模型原始输出）和 `text`（后处理后，`raw` 候选两者相同）、`token_usage`、`latency`（ms）
 
 ## 必须知道的坑
 
 - arena 会重新上传音频，**arena 里的 `vc_audio_id` 和数据集里的原始 audio_id 不是同一个**，
   要看原始线上请求得用原 id 跑 `audio`。
 - arena 用评测账号发请求，**原用户的词典不会生效**，所以 `effective_vocabulary` 为空是正常的。
-- arena 只支持 en/zh/ja/es，其他语言（以及 `auto` / 空）的 run 都会被存成 `en`。
-- whisper-1 等直连模型在 PostHog / Langfuse 里**没有 trace**，只有 arena 库里的记录。
+- 早期（约 2026-10-07 前）arena 只支持 en/zh/ja/es，其他语言的 run 被存成了 `en`；
+  后来已支持 pt-br 和 `auto`。一律以 `sent_language` 列为准，别凭记忆判断。
+- **只有 VoiceCursor 系列候选有 PostHog / Langfuse trace**（靠 `vc_audio_id`）。第三方候选（OpenAI、Gemini、
+  DashScope、Deepgram…）即使 `backend=voicecursor-asr` 走了网关，网关也不上报 PostHog / Langfuse，
+  `provider_session_id` 在两边都搜不到（2026-10-14 验证）——别去搜，模型和输入输出直接看 arena 库那几列。
 - `ARENA_DATABASE_DSN` 是 postgres 主账号。脚本强制只读会话；**自己写 SQL 时也只跑 SELECT**。
 - Langfuse `/api/public/traces` 公告 2026-11-16 下线。之后如果 `--fetch-traces` 或 `audio` 的 Langfuse 兜底报 404/410，
   要改用 `/api/public/v2/observations`。
