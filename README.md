@@ -75,6 +75,20 @@ python3 $S arena-db --batch <batch_id> --with-posthog --out run.csv
 | 输出 | `asr_text`（模型原始输出）、`text`（后处理后）、`wer`、`latency`、`token_usage` |
 | 追踪 | `vc_audio_id`（VoiceCursor → PostHog）、`provider_session_id`（第三方）、`reused_from_run_id` |
 
+## 附带 skill：audio-fetch（下载原始音频）
+
+`audio-fetch/` 是另一个独立 skill：给 audio_id（UUID）、Langfuse trace id（32 位 hex）或 S3 key，
+经 PostHog 找到 S3 地址，把 `.ogg` 和元信息 json 下载到本地。
+
+```bash
+ln -s ~/.claude/skills/trace-lookup/audio-fetch ~/.claude/skills/audio-fetch
+```
+
+依赖本机的 `badcase_debug_tool`（默认 `~/Desktop/badcase_debug_tool`，可用 `BADCASE_TOOL_DIR` 改）：
+用它的 `.venv`、`.env`（PostHog + AWS 凭据）和 `core/s3_audio.py`。用法见 [audio-fetch/SKILL.md](audio-fetch/SKILL.md)。
+
+在 Claude Code 里说"帮我拉一下这条音频：<id>"或 `/audio-fetch <id>` 即可。
+
 ## 已知坑
 
 - arena 会重新上传音频，所以 VoiceCursor 候选的 `vc_audio_id` 是新的，和原始线上 audio_id 不是同一个。
